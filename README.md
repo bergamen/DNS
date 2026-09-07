@@ -13,11 +13,12 @@ Primeramente se necesita instalar la libreria dnslib para poder correr el codigo
 Para poder correr el `resolver.py` se necesita ejecutar `python3 resolver.py -g`
 
 # Explicacion del codigo
-
 ## Flujo
 
 (¿Qué tipo de socket debe usar? Anótelo en su informe)
 R: No orientado a coneccion
+
+
 
 
 
