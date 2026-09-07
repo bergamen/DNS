@@ -1,5 +1,5 @@
 from dnslib.dns import QTYPE
-from dnslib import DNSRecord
+from dnslib import DNSRecord, RR , A
 import socket
 
 import sys
@@ -10,72 +10,71 @@ PUERTO_VM = 8000
 buff_size = 1024
 
 root_ip = (".","198.41.0.4")
+deb = 0
+cache = 0
 
-historial_consultas = [] 
+historial_consultas = []
 
-registro_cache = {} 
-historial_name = {} #guardas las 17 menos usadas
-historial_ip = {} 
+registro_cache = {}
 
-def save_cache(nombre:str,ip:bytes):
+def save_cache(nombre:str,ip:str):
 
-    global registro_cache,historial_name,historial_ip,historial_consultas
+    global registro_cache,historial_consultas
+
+    if cache == 0:
+        return
 
     historial_consultas.append(nombre)
-    if not nombre in historial_name and not nombre in registro_cache:
-        historial_name[nombre] = 1
 
-        parse_cache = DNSRecord().parse(ip)
+    if nombre in registro_cache or len(registro_cache) < 3:
+        registro_cache[nombre] = ip
 
-        historial_ip[nombre] = (parse_cache.rr,parse_cache.ar,parse_cache.auth)
-    elif nombre in historial_name:
-        historial_name[nombre] += 1
-    elif nombre in registro_cache:
-        registro_cache[nombre] += 1
 
     if len(historial_consultas) > 20:
-        last_name = historial_consultas[0]
         historial_consultas = historial_consultas[1:]
 
-        if last_name in historial_name:
 
-            historial_name[last_name] -= 1
+    min_ip = min(registro_cache,key=registro_cache.get)
 
-            if historial_name[last_name] == 0:
-                historial_name.pop(last_name)
-                historial_ip.pop(last_name)
+    sum_min = sum([x==min_ip for x in historial_consultas])
 
-        elif last_name in registro_cache:
-            registro_cache[last_name] -= 1
-            
-            if registro_cache[last_name] == 0:
-                registro_cache.pop(last_name)
-                registro_cache.pop(last_name)
+    aux_consultas = historial_consultas.copy()
 
-    if len(registro_cache) < 3 and len(historial_name) > 0:
-        max_ip = max(historial_name,key=historial_name.get)
-        registro_cache[max_ip] = historial_name[max_ip]
-        historial_name.pop(max_ip)
-    elif len(historial_name) > 0:
-        max_ip = max(historial_name,key=historial_name.get)
-        min_ip = min(registro_cache,key=registro_cache.get)
-        if historial_name[max_ip] > registro_cache[min_ip]:
-            historial_name[min_ip] = registro_cache[min_ip]
-            registro_cache[max_ip] = historial_name[max_ip]
-            registro_cache.pop(min_ip)
-            historial_name.pop(max_ip)
+    for name in registro_cache:
+        while name in aux_consultas:
+            aux_consultas.remove(name)
+
+    max_name = ""
+    cant_name = 0
+    while len(aux_consultas) > 0:
+        primero = aux_consultas[0]
+        cantidad_aux = sum([x==primero for x in aux_consultas])
+        if cantidad_aux > cant_name:
+            cant_name = cantidad_aux
+            max_name = primero
+        while primero in aux_consultas:
+            aux_consultas.remove(primero)
+
+    if cant_name > sum_min:
+        registro_cache.pop(min_ip)
+        registro_cache[max_name] = None
+
+        if max_name == name:
+            registro_cache[max_name] = ip
     
 
 def use_cache(qname):
-    if deb == 1:
-        print("IP resuelta por cache")
+    if cache == 0:
+        return None
     
     if qname in registro_cache:
-        return historial_ip[qname]
+        if deb == 1:
+            print(f"(debug) {qname} resuelta por cache: {registro_cache[qname]}")
+        return registro_cache[qname]
     return None
 
 
-deb = 0
+
 
 def debug(qname,ns,ip):
     if deb == 1:
@@ -121,7 +120,7 @@ def resolver(mensaje_consulta:bytes,ip_addr=root_ip) -> bytes:
                 dns_socket.close()
                 continue
 
-            name_Server = ns_rr.rdata
+            name_Server = str(ns_rr.rdata)
             dns_query = DNSRecord.question(qname=name_Server,qtype="A",qclass="IN")
             resp_rer = DNSRecord().parse(resolver(dns_query.pack()))
 
@@ -139,10 +138,10 @@ if __name__ == "__main__":
     buff_size = 1024
 
     if len(sys.argv) > 1:
-        if sys.argv[1] == "-g":
+        if "g" in sys.argv[1]:
             deb = 1
-        else:
-            raise "Error: Argumento innecesario"
+        if "c" in sys.argv[1]:
+            cache = 1
 
 
     address_dns = (IP_VM,PUERTO_VM)
@@ -158,15 +157,20 @@ if __name__ == "__main__":
         ip_a = use_cache(qname)
 
         if ip_a != None:
-            dns.rr = ip_a[0]
-            dns.ar = ip_a[1]
-            dns.auth = ip_a[2]
+            dns.add_answer(RR(qname,QTYPE.A,rdata=A(ip_a)))
             resp = dns.pack()
-            save_cache(qname,resp)
+            save_cache(qname,ip_a)
             
         else:
             resp = resolver(dns.pack())
-            save_cache(qname,resp)
+
+            dns_aux = DNSRecord.parse(resp)
+            new_ip = None
+            for i in dns_aux.rr:
+                if QTYPE.get(i.rtype) == "A":
+                    new_ip = i
+            if new_ip != None:
+                save_cache(qname,str(i.rdata))
         dns_socket.sendto(resp,address_resp)        
 
     dns_socket.close()
