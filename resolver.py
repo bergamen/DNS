@@ -1,6 +1,5 @@
-from dnslib.dns import RR, A
-from dnslib.dns import CLASS, QTYPE
-from dnslib import DNSRecord, DNSHeader, DNSQuestion
+from dnslib.dns import QTYPE
+from dnslib import DNSRecord
 import socket
 
 import sys
@@ -8,133 +7,127 @@ import sys
 IP_VM = "192.168.100.119"
 PUERTO_VM = 8000
 
-root_ip = "198.41.0.4"
+buff_size = 1024
 
-registro_cache = {}  #solo puede guardar 3 dominios , qname:(ip,cant)
-historial_consultas_qname = [] #cuarda los ultimos 20 dominios consultados qname
-historial_consultas_ip = []
-#guarda una consulta en el historial y si es de las 3 mas buscadas en registro_cache
+root_ip = (".","198.41.0.4")
 
-#hay un caso que hace q cambie todo pal informe
-def guardarencache(nombre:str,ip:bytes):
-    global historial_consultas_qname, historial_consultas_ip, registro_cache
-    historial_consultas_qname.append(nombre)
-    historial_consultas_ip.append(ip)
-    if len(historial_consultas_qname) > 20:
-        historial_consultas_qname = historial_consultas_qname[1:]
-        historial_consultas_ip = historial_consultas_ip[1:]
+historial_consultas = [] 
 
-    frecuencias = {}
-    for nombre_ in historial_consultas_qname:
-        if not nombre_ in frecuencias:
-            frecuencias[nombre_] = 0
-        frecuencias[nombre_] +=1
+registro_cache = {} 
+historial_name = {} #guardas las 17 menos usadas
+historial_ip = {} 
 
-    maximos = []
+def save_cache(nombre:str,ip:bytes):
 
-    print(frecuencias)
+    global registro_cache,historial_name,historial_ip,historial_consultas
 
-    for i in range(min(3,len(frecuencias))):
-        maximos.append(max(frecuencias,key=frecuencias.get))
-        frecuencias.pop(maximos[-1])
+    historial_consultas.append(nombre)
+    if not nombre in historial_name and not nombre in registro_cache:
+        historial_name[nombre] = 1
+
+        parse_cache = DNSRecord().parse(ip)
+
+        historial_ip[nombre] = (parse_cache.rr,parse_cache.ar,parse_cache.auth)
+    elif nombre in historial_name:
+        historial_name[nombre] += 1
+    elif nombre in registro_cache:
+        registro_cache[nombre] += 1
+
+    if len(historial_consultas) > 20:
+        last_name = historial_consultas[0]
+        historial_consultas = historial_consultas[1:]
+
+        if last_name in historial_name:
+
+            historial_name[last_name] -= 1
+
+            if historial_name[last_name] == 0:
+                historial_name.pop(last_name)
+                historial_ip.pop(last_name)
+
+        elif last_name in registro_cache:
+            registro_cache[last_name] -= 1
+            
+            if registro_cache[last_name] == 0:
+                registro_cache.pop(last_name)
+                registro_cache.pop(last_name)
+
+    if len(registro_cache) < 3 and len(historial_name) > 0:
+        max_ip = max(historial_name,key=historial_name.get)
+        registro_cache[max_ip] = historial_name[max_ip]
+        historial_name.pop(max_ip)
+    elif len(historial_name) > 0:
+        max_ip = max(historial_name,key=historial_name.get)
+        min_ip = min(registro_cache,key=registro_cache.get)
+        if historial_name[max_ip] > registro_cache[min_ip]:
+            historial_name[min_ip] = registro_cache[min_ip]
+            registro_cache[max_ip] = historial_name[max_ip]
+            registro_cache.pop(min_ip)
+            historial_name.pop(max_ip)
     
-    registro_cache.clear()
 
-    for i in maximos:
-        registro_cache[i] = historial_consultas_ip[historial_consultas_qname.index(i)]
+def use_cache(qname):
+    if deb == 1:
+        print("IP resuelta por cache")
     
-
-def usarcache(qname):
     if qname in registro_cache:
-        return registro_cache[qname]
+        return historial_ip[qname]
     return None
 
 
-debug = 0
-def printg(text:str):
-    if debug == 0 or debug == 2:
-        print(text)
-def printn(text:str):
-    if debug == 1 or debug == 2:
-        print(text)
+deb = 0
 
+def debug(qname,ns,ip):
+    if deb == 1:
+        print(f"(debug) Consultando {qname} a {ns} con dirección IP {ip}")
 
 
 def resolver(mensaje_consulta:bytes,ip_addr=root_ip) -> bytes:
-    
-    buff_size = 1024
-
-    contador = 0
-
     while True:
         dns_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        contador+=1
-        printn(f"Estuve {contador} aqui")
-        address = (ip_addr,53)
-        dns_aux = DNSRecord.parse(mensaje_consulta)
-        name_con = dns_aux.q.get_qname()
+        address = (ip_addr[1],53)
+
+        qname = DNSRecord().parse(mensaje_consulta).q.qname
+
+        debug(qname,ip_addr[0],ip_addr[1])
         dns_socket.sendto(mensaje_consulta,address)
 
-        response,address_response = dns_socket.recvfrom(buff_size)
+        response, _ = dns_socket.recvfrom(buff_size)
 
         resp_dns = DNSRecord.parse(response)
 
-
-        print([(QTYPE.get(x.rtype))+"   "+str(x.rdata) for x in resp_dns.rr])
-        print([(QTYPE.get(x.rtype))+"   "+str(x.rdata) for x in resp_dns.ar])
-        print([(QTYPE.get(x.rtype))+"   "+str(x.rdata) for x in resp_dns.auth])
-
-
-        printn("Buscando tipo A")
-        for t in resp_dns.rr:
-            if QTYPE.get(t.rtype) == "A":
-                printn("Encontrado, cerrando ciclo")
+        for rr in resp_dns.rr:
+            if QTYPE.get(rr.rtype) == "A":
                 dns_socket.close()
                 return resp_dns.pack()
-        printn("No encontrado tipo A")
         
 
-        aux_NS = False
-        for t in resp_dns.auth:
-            aux_NS = aux_NS or (QTYPE.get(t.rtype) == "NS")
+        ns_rr = None
+        for rr in resp_dns.auth:
+            if QTYPE.get(rr.rtype) == "NS":
+                ns_rr = rr
 
             
-        if aux_NS:
-            printn("Encontrado NS")
+        if ns_rr != None:
 
-            tipos = [QTYPE.get(x.rtype) for x in resp_dns.ar]
+            ar_rr = None
+            for rr in resp_dns.ar:
+                if QTYPE.get(rr.rtype) == "A":
+                    ar_rr = rr
+                    break
 
-            
-            if "A" in tipos:
-                tipo_a = tipos.index('A')
-            else:
-                tipo_a = -1
-        
-            if tipo_a != -1:
-                ip_addr = str(resp_dns.ar[tipo_a].rdata)
-                #mensaje_consulta = resp_dns.pack()
-                printg(f"(debug) Consultando {name_con} a {resp_dns.ar[tipo_a ].rname} con dirección IP {resp_dns.ar[tipo_a ].rdata}")
+            if ar_rr != None:
+                ip_addr = (ar_rr.rname,str(ar_rr.rdata))
+                dns_socket.close()
                 continue
 
-            aux = False
+            name_Server = ns_rr.rdata
+            dns_query = DNSRecord.question(qname=name_Server,qtype="A",qclass="IN")
+            resp_rer = DNSRecord().parse(resolver(dns_query.pack()))
 
-            printn("No encontrado tipo A en AR")
-            for t in resp_dns.auth:
-                name_Server = t.rdata
-                printg(f"(debug) Consultando {name_con} a {name_Server} con dirección IP {t.rdata}")
-                printn(f"Entrando a recursion con: {name_Server}")
-                dns_query = DNSRecord.question(qname=str(name_Server),qtype="A",qclass="IN")
-                resp_rer = DNSRecord().parse(resolver(dns_query.pack()))
-                if resp_rer != None:
-                    printn("IP resuelta")
-                    ip_addr = str(resp_rer.rr[0].rdata)
-                    printg(f"(debug) Consultando {name_con} a {resp_rer.rr[0].rname} con dirección IP {resp_rer.rr[0].rdata}")
-                    aux = True
-
-            if aux:
-                continue
-
-        printn("No encontrado NS")
+            ip_addr = (resp_rer.rr[0].rname,str(resp_rer.rr[0].rdata))
+            dns_socket.close()
+            continue
         
         break
     dns_socket.close()
@@ -147,14 +140,10 @@ if __name__ == "__main__":
 
     if len(sys.argv) > 1:
         if sys.argv[1] == "-g":
-            debug = 1
-        elif sys.argv[1] == "-t":
-            debug = 2
+            deb = 1
         else:
-            raise "Mijo pa que se enoja"
+            raise "Error: Argumento innecesario"
 
-    printg("Entrando a debug")
-    printn("NO estoy en debug")
 
     address_dns = (IP_VM,PUERTO_VM)
 
@@ -166,19 +155,18 @@ if __name__ == "__main__":
         dns = DNSRecord.parse(recv)
 
         qname = dns.q.get_qname()
-        ip_a = usarcache(qname)
+        ip_a = use_cache(qname)
 
         if ip_a != None:
-            printg(f"Resuelto por Cache: {qname}")
+            dns.rr = ip_a[0]
+            dns.ar = ip_a[1]
+            dns.auth = ip_a[2]
+            resp = dns.pack()
+            save_cache(qname,resp)
             
-            resp = DNSRecord().parse(ip_a)
-            resp.header.id = dns.header.id
-            resp = resp.pack()
-            
-
         else:
             resp = resolver(dns.pack())
-            guardarencache(qname,resp)
+            save_cache(qname,resp)
         dns_socket.sendto(resp,address_resp)        
 
     dns_socket.close()
